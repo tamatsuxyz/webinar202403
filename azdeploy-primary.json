@@ -1,0 +1,418 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "adminUsername": {
+            "type": "string",
+            "metadata": {
+                "description": "Username for the virtual machines"
+            }
+        },
+        "adminPassword": {
+            "type": "securestring",
+            "metadata": {
+                "description": "Password for the virtual machines"
+            }
+        }
+    },
+    "variables": {
+        "location": "[resourceGroup().location]",
+        "vnetName": "vnet",
+        "webSubnetName": "web",
+        "dbSubnetName": "db",
+        "webVMCount": 2,
+        "dbVMCount": 2,
+        "lbWebName": "lb-web",
+        "lbDbName": "lb-db",
+        "vmExtensionName": "dscExtension",
+        "configurationFunction": "ContosoWebsite.ps1\\ContosoWebsite",
+        "moduleFilePath": "ContosoWebsite.ps1.zip",
+        "_artifactsLocation": "https://github.com/Azure/azure-quickstart-templates/raw/master/demos/dsc-extension-iis-server-windows-vm/",
+        "avSetWebName": "avSetWeb",
+        "avSetDbName": "avSetDb"
+    },
+    "resources": [
+        {
+            "type": "Microsoft.Network/virtualNetworks",
+            "apiVersion": "2021-04-01",
+            "name": "[variables('vnetName')]",
+            "location": "[variables('location')]",
+            "properties": {
+                "addressSpace": {
+                    "addressPrefixes": [
+                        "10.0.0.0/16"
+                    ]
+                },
+                "subnets": [
+                    {
+                        "name": "[variables('webSubnetName')]",
+                        "properties": {
+                            "addressPrefix": "10.0.0.0/24"
+                        }
+                    },
+                    {
+                        "name": "[variables('dbSubnetName')]",
+                        "properties": {
+                            "addressPrefix": "10.0.1.0/24"
+                        }
+                    }
+                ]
+            }
+        },
+        {
+            "type": "Microsoft.Network/loadBalancers",
+            "apiVersion": "2021-04-01",
+            "name": "[variables('lbWebName')]",
+            "location": "[variables('location')]",
+            "properties": {
+                "frontendIPConfigurations": [
+                    {
+                        "name": "FrontendIP",
+                        "properties": {
+                            "publicIPAddress": {
+                                "id": "[resourceId('Microsoft.Network/publicIPAddresses', variables('lbWebName'))]"
+                            }
+                        }
+                    }
+                ],
+                "backendAddressPools": [
+                    {
+                        "name": "backendPool",
+                        "properties": {
+                            "backendIPConfigurations": [
+                                {
+                                    "id": "[resourceId('Microsoft.Network/networkInterfaces/ipConfigurations', 'web0', 'ipconfig1')]"
+                                },
+                                {
+                                    "id": "[resourceId('Microsoft.Network/networkInterfaces/ipConfigurations', 'web1', 'ipconfig1')]"
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "probes": [
+                    {
+                        "name": "HealthProbe",
+                        "properties": {
+                            "protocol": "Http",
+                            "port": 80,
+                            "requestPath": "/",
+                            "intervalInSeconds": 15,
+                            "numberOfProbes": 2
+                        }
+                    }
+                ],
+                "loadBalancingRules": [
+                    {
+                        "name": "LBRule",
+                        "properties": {
+                            "frontendIPConfiguration": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers', variables('lbWebName')), '/frontendIPConfigurations/FrontendIP')]"
+                            },
+                            "backendAddressPool": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers', variables('lbWebName')), '/backendAddressPools/BackendPool')]"
+                            },
+                            "probe": {
+                                "id": "[concat(resourceId('Microsoft.Network/loadBalancers', variables('lbWebName')), '/probes/HealthProbe')]"
+                            },
+                            "protocol": "Tcp",
+                            "frontendPort": 80,
+                            "backendPort": 80,
+                            "enableFloatingIP": false,
+                            "idleTimeoutInMinutes": 4
+                        }
+                    }
+                ]
+            },
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/publicIPAddresses', variables('lbWebName'))]"
+            ]
+        },
+        {
+            "type": "Microsoft.Network/loadBalancers",
+            "apiVersion": "2021-04-01",
+            "name": "[variables('lbDbName')]",
+            "location": "[variables('location')]",
+            "properties": {
+                "frontendIPConfigurations": [
+                    {
+                        "name": "FrontendIP",
+                        "properties": {
+                            "privateIPAddress": "10.0.1.100",
+                            "privateIPAllocationMethod": "Static",
+                            "subnet": {
+                                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('dbSubnetName'))]"
+                            }
+                        }
+                    }
+                ],
+                "backendAddressPools": [
+                    {
+                        "name": "backendPool",
+                        "properties": {
+                            "backendIPConfigurations": [
+                                {
+                                    "id": "[resourceId('Microsoft.Network/networkInterfaces/ipConfigurations', 'db0', 'ipconfig1')]"
+                                },
+                                {
+                                    "id": "[resourceId('Microsoft.Network/networkInterfaces/ipConfigurations', 'db1', 'ipconfig1')]"
+                                }
+                            ]
+                        }
+                    }
+                ],
+                "probes": [
+                        {
+                            "name": "HealthProbe",
+                            "properties": {
+                                "protocol": "Tcp",
+                                "port": 1433,
+                                "intervalInSeconds": 15,
+                                "numberOfProbes": 2
+                            }
+                        }
+                    ],
+                    "loadBalancingRules": [
+                        {
+                            "name": "LBRule",
+                            "properties": {
+                                "frontendIPConfiguration": {
+                                    "id": "[concat(resourceId('Microsoft.Network/loadBalancers', variables('lbDbName')), '/frontendIPConfigurations/FrontendIP')]"
+                                },
+                                "backendAddressPool": {
+                                    "id": "[concat(resourceId('Microsoft.Network/loadBalancers', variables('lbDbName')), '/backendAddressPools/BackendPool')]"
+                                },
+                                "probe": {
+                                    "id": "[concat(resourceId('Microsoft.Network/loadBalancers', variables('lbDbName')), '/probes/HealthProbe')]"
+                                },
+                                "protocol": "Tcp",
+                                "frontendPort": 1433,
+                                "backendPort": 1433,
+                                "enableFloatingIP": false,
+                                "idleTimeoutInMinutes": 4
+                            }
+                        }
+                    ]
+            },
+            "dependsOn": [
+                "[concat('Microsoft.Network/virtualNetworks/', variables('vnetName'))]"
+            ]
+        },
+        {
+            "type": "Microsoft.Compute/availabilitySets",
+            "name": "[variables('avSetWebName')]",
+            "apiVersion": "2019-07-01",
+            "location": "[resourceGroup().location]",
+            "sku": {
+                "name": "Aligned"
+            },
+            "properties": {
+                "platformFaultDomainCount": 2,
+                "platformUpdateDomainCount": 5
+            }
+        },
+        {
+            "type": "Microsoft.Compute/availabilitySets",
+            "name": "[variables('avSetDbName')]",
+            "apiVersion": "2019-07-01",
+            "location": "[resourceGroup().location]",
+            "sku": {
+                "name": "Aligned"
+            },
+            "properties": {
+                "platformFaultDomainCount": 2,
+                "platformUpdateDomainCount": 5
+            }
+        },
+        {
+            "type": "Microsoft.Compute/virtualMachines",
+            "apiVersion": "2021-04-01",
+            "name": "[concat('web', copyIndex())]",
+            "location": "[variables('location')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/networkInterfaces', concat('web', copyIndex()))]",
+                "[resourceId('Microsoft.Compute/availabilitySets', variables('avSetWebName'))]"
+            ],
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "Standard_D2s_v5"
+                },
+                "storageProfile": {
+                    "imageReference": {
+                        "publisher": "MicrosoftWindowsServer",
+                        "offer": "WindowsServer",
+                        "sku": "2022-Datacenter",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "createOption": "FromImage"
+                    }
+                },
+                "osProfile": {
+                    "computerName": "[concat('web', copyIndex())]",
+                    "adminUsername": "[parameters('adminUsername')]",
+                    "adminPassword": "[parameters('adminPassword')]"
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces', concat('web', copyIndex()))]"
+                        }
+                    ]
+                },
+                "availabilitySet": {
+                    "id": "[resourceId('Microsoft.Compute/availabilitySets', variables('avSetWebName'))]"
+                }
+            },
+            "copy": {
+                "name": "webVMs",
+                "count": "[variables('webVMCount')]"
+            }
+        },
+        {
+            "type": "Microsoft.Compute/virtualMachines/extensions",
+            "apiVersion": "2023-09-01",
+            "name": "[format('{0}/{1}', concat('web', copyIndex()), variables('vmExtensionName'))]",
+            "location": "[variables('location')]",
+            "dependsOn": [
+                "[concat('Microsoft.Compute/virtualMachines/web', copyIndex())]"
+            ],            
+            "properties": {
+                "publisher": "Microsoft.Powershell",
+                "type": "DSC",
+                "typeHandlerVersion": "2.19",
+                "autoUpgradeMinorVersion": true,
+                "settings": {
+                    "ModulesUrl": "[uri(variables('_artifactsLocation'), variables('moduleFilePath'))]",
+                    "ConfigurationFunction": "[variables('configurationFunction')]",
+                    "Properties": {
+                        "MachineName": "[concat('web', copyIndex())]"
+                    }
+                }
+            },
+            "copy": {
+                "name": "enableIIS",
+                "count": "[variables('webVMCount')]"
+            }
+        },
+        {
+          "type": "Microsoft.Network/networkInterfaces",
+            "apiVersion": "2018-10-01",
+            "name": "[concat('web', copyIndex())]",
+            "location": "[variables('location')]",
+            "dependsOn": [
+                "[concat('Microsoft.Network/virtualNetworks/', variables('vnetName'))]",
+                "[concat('Microsoft.Network/loadBalancers/', variables('lbWebName'))]"
+            ],
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "ipconfig1",
+                        "properties": {
+                            "subnet": {
+                                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('webSubnetName'))]"
+                            },
+                            "loadBalancerBackendAddressPools": [
+                                {
+                                    "id": "[resourceId('Microsoft.Network/loadBalancers/backendAddressPools', variables('lbWebName'), 'backendPool')]"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            "copy": {
+                "name": "webNICs",
+                "count": "[variables('webVMCount')]"
+            }
+        },
+        {
+            "type": "Microsoft.Compute/virtualMachines",
+            "apiVersion": "2021-04-01",
+            "name": "[concat('db', copyIndex())]",
+            "location": "[variables('location')]",
+            "dependsOn": [
+                "[resourceId('Microsoft.Network/networkInterfaces', concat('db', copyIndex()))]",
+                "[resourceId('Microsoft.Compute/availabilitySets', variables('avSetDbName'))]"
+            ],
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "Standard_D2s_v5"
+                },
+                "storageProfile": {
+                    "imageReference": {
+                        "publisher": "MicrosoftWindowsServer",
+                        "offer": "WindowsServer",
+                        "sku": "2022-Datacenter",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "createOption": "FromImage"
+                    }
+                },
+                "osProfile": {
+                    "computerName": "[concat('db', copyIndex())]",
+                    "adminUsername": "[parameters('adminUsername')]",
+                    "adminPassword": "[parameters('adminPassword')]"
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[resourceId('Microsoft.Network/networkInterfaces', concat('db', copyIndex()))]"
+                        }
+                    ]
+                },
+                "availabilitySet": {
+                    "id": "[resourceId('Microsoft.Compute/availabilitySets', variables('avSetDbName'))]"
+                }
+            },
+            "copy": {
+                "name": "dbVMs",
+                "count": "[variables('dbVMCount')]"
+            }
+        },
+        {
+          "type": "Microsoft.Network/networkInterfaces",
+            "apiVersion": "2018-10-01",
+            "name": "[concat('db', copyIndex())]",
+            "location": "[variables('location')]",
+            "dependsOn": [
+                "[concat('Microsoft.Network/virtualNetworks/', variables('vnetName'))]",
+                "[concat('Microsoft.Network/loadBalancers/', variables('lbDbName'))]"
+            ],
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "ipconfig1",
+                        "properties": {
+                            "subnet": {
+                                "id": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('dbSubnetName'))]"
+                            },
+                            "loadBalancerBackendAddressPools": [
+                                {
+                                    "id": "[resourceId('Microsoft.Network/loadBalancers/backendAddressPools', variables('lbDbName'), 'backendPool')]"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            "copy": {
+                "name": "dbNICs",
+                "count": "[variables('dbVMCount')]"
+            }
+        },
+        {
+            "type": "Microsoft.Network/publicIPAddresses",
+            "apiVersion": "2021-04-01",
+            "name": "[variables('lbWebName')]",
+            "location": "[variables('location')]",
+            "properties": {
+                "publicIPAllocationMethod": "Static",
+                "dnsSettings": {
+                    "domainNameLabel": "[concat(resourceGroup().name, 'p')]"
+                }
+            }
+        }
+    ]
+}
